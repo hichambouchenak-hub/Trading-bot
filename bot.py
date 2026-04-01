@@ -1,5 +1,6 @@
 # ========================================================
-# البوت V12 - النسخة التي كانت تعمل
+# البوت V18 - V12 محسن (مخفف + مطاردة مبكرة)
+# مع ترقيم الصفقات
 # ========================================================
 
 import ccxt
@@ -25,17 +26,23 @@ TELEGRAM_TOKEN = "8681138761:AAEUVPSzkPzrwLMGcwotBbISQ3D1b-QZds8"
 CHAT_ID = "5809146953"
 
 # =========================
-# إعدادات البوت
+# إعدادات البوت V18
 # =========================
 START_BALANCE = 55.00
 TRADE_SIZE = 2.5
 MAX_OPEN_TRADES = 20
 STOP_LOSS_PCT = 0.025
 
+# مستويات المطاردة المحسنة V18 (حماية مبكرة)
 PROFIT_LEVELS = [
-    (2.0, 1.0), (3.5, 2.0), (7.0, 5.0), (15.0, 12.0), (30.0, 25.0),
+    (1.5, 0.5),   # عند 1.5% ربح → ستوب 0.5%
+    (3.0, 1.5),   # عند 3% ربح → ستوب 1.5%
+    (5.0, 3.0),   # عند 5% ربح → ستوب 3%
+    (10.0, 7.0),  # عند 10% ربح → ستوب 7%
+    (20.0, 15.0), # عند 20% ربح → ستوب 15%
 ]
 
+# العملات المستبعدة
 EXCLUDED_COINS = ["USDC", "DAI", "FDUSD", "TUSD", "USDE", "PYUSD", "USD1", "USDT", "BGB", "BITGET"]
 
 # =========================
@@ -52,20 +59,20 @@ exchange = ccxt.bitget({
 # =========================
 # إدارة الحالة
 # =========================
-MEMORY_FILE = "bot_v12_state.json"
+MEMORY_FILE = "bot_v18_state.json"
 
 def load_state():
     if os.path.exists(MEMORY_FILE):
         try:
             with open(MEMORY_FILE, 'r') as f:
                 data = json.load(f)
-                for key in ["active_trades", "wins", "losses"]:
+                for key in ["active_trades", "wins", "losses", "trade_count"]:
                     if key not in data:
                         data[key] = {} if key == "active_trades" else 0
                 return data
         except:
             pass
-    return {"active_trades": {}, "wins": 0, "losses": 0}
+    return {"active_trades": {}, "wins": 0, "losses": 0, "trade_count": 0}
 
 def save_state():
     try:
@@ -86,7 +93,7 @@ def send_telegram(msg):
         pass
 
 # =========================
-# مؤشرات يدوية (بدون pandas_ta)
+# مؤشرات يدوية
 # =========================
 def calculate_ema(series, length):
     return series.ewm(span=length, adjust=False).mean()
@@ -103,7 +110,7 @@ def is_btc_uptrend(df_btc):
         return True
 
 # =========================
-# جلب البيانات
+# جلب البيانات والاستراتيجية
 # =========================
 def fetch_ohlcv(symbol, limit=500):
     try:
@@ -116,24 +123,26 @@ def fetch_ohlcv(symbol, limit=500):
         return None
 
 def calculate_fibonacci(df):
+    """حساب Fibonacci المحسن V18 (مخفف)"""
     df['h_max'] = df['high'].rolling(50).max()
     df['l_min'] = df['low'].rolling(50).min()
-    df['fib_deep'] = df['h_max'] - (0.764 * (df['h_max'] - df['l_min']))
-    df['gate_382'] = df['l_min'] + (0.382 * (df['h_max'] - df['l_min']))
+    df['fib_deep'] = df['h_max'] - (0.786 * (df['h_max'] - df['l_min']))  # 0.764 → 0.786
+    df['gate_35'] = df['l_min'] + (0.35 * (df['h_max'] - df['l_min']))    # 0.382 → 0.35
     return df
 
 def check_entry(df, current_index):
     if current_index < 50:
         return False
     fib_deep = df['fib_deep'].iloc[current_index]
-    gate_382 = df['gate_382'].iloc[current_index]
+    gate_35 = df['gate_35'].iloc[current_index]
     low_20 = df['low'].iloc[current_index-20:current_index].min()
     current_close = df['close'].iloc[current_index]
-    return low_20 <= fib_deep and current_close > gate_382
+    return low_20 <= fib_deep and current_close > gate_35
 
 def calculate_stop(entry_price, max_price, current_pnl):
+    """حساب الستوب مع مستويات V18"""
     fixed_stop = entry_price * (1 - STOP_LOSS_PCT)
-    if current_pnl < 2.0:
+    if current_pnl < PROFIT_LEVELS[0][0]:
         return fixed_stop
     final_stop = fixed_stop
     for trigger, trail_dist in PROFIT_LEVELS:
@@ -176,6 +185,7 @@ def trade_manager():
                         
                         send_telegram(f"""
 {res}
+• الصفقة رقم: `{t['trade_id']}`
 • العملة: `{symbol}`
 • الربح المحقق: `{pnl:+.2f}%` (+{pnl_usd:.2f}$)
 • أعلى ربح وصل: `{max_gain:.1f}%`
@@ -184,7 +194,7 @@ def trade_manager():
                         save_state()
                         
             except Exception as e:
-                print(f"خطأ: {e}")
+                print(f"خطأ في trade_manager: {e}")
         time.sleep(20)
 
 # =========================
@@ -217,13 +227,20 @@ def scanner():
                         if check_entry(df, len(df)-1):
                             exchange.create_market_buy_order(s, None, params={'cost': TRADE_SIZE})
                             price = exchange.fetch_ticker(s)['last']
-                            state['active_trades'][s] = {"entry": price, "max_p": price}
+                            
+                            # زيادة رقم الصفقة
+                            state['trade_count'] += 1
+                            trade_id = state['trade_count']
+                            
+                            state['active_trades'][s] = {"entry": price, "max_p": price, "trade_id": trade_id}
                             save_state()
                             
                             send_telegram(f"""
 🏹 *دخول جديد* 🏹
+• الصفقة رقم: `{trade_id}`
 • العملة: `{s}`
 • سعر الدخول: `{price:.8f}$`
+• حجم الصفقة: `{TRADE_SIZE}$`
 • الصفقات المفتوحة: `{len(state['active_trades'])}/{MAX_OPEN_TRADES}`
 """)
                             break
@@ -253,7 +270,7 @@ def report_loop():
                     
                     pnl = (price - t['entry']) / t['entry'] * 100
                     max_gain = (t['max_p'] - t['entry']) / t['entry'] * 100
-                    details.append(f"• `{s}`: {pnl:+.2f}% (Max: {max_gain:.1f}%)")
+                    details.append(f"• #{t['trade_id']} `{s}`: {pnl:+.2f}% (Max: {max_gain:.1f}%)")
                 except:
                     pass
             
@@ -263,7 +280,7 @@ def report_loop():
             win_rate = (state['wins'] / total_trades * 100) if total_trades > 0 else 0
             
             msg = f"""
-📊 *تقرير V12* 📊
+📊 *تقرير V18* 📊
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 {'=' * 40}
 
@@ -277,6 +294,7 @@ def report_loop():
 • ✅ رابحة: `{state['wins']}`
 • ❌ خاسرة: `{state['losses']}`
 • 📈 نسبة الربح: `{win_rate:.1f}%`
+• 🔢 إجمالي الصفقات المفتوحة: `{state['trade_count']}`
 
 🔹 *الصفقات المفتوحة:*
 {chr(10).join(details) if details else 'لا توجد صفقات مفتوحة'}
@@ -284,7 +302,7 @@ def report_loop():
             send_telegram(msg)
             
         except Exception as e:
-            print(f"خطأ: {e}")
+            print(f"خطأ في report: {e}")
         time.sleep(900)
 
 # =========================
@@ -292,21 +310,23 @@ def report_loop():
 # =========================
 if __name__ == "__main__":
     send_telegram(f"""
-🚀 *البوت V12 بدأ التشغيل* 🚀
+🚀 *البوت V18 (محسن) بدأ التشغيل* 🚀
 
 📊 *الإعدادات:*
 • رأس المال: `{START_BALANCE:.2f}$`
 • حجم الصفقة: `{TRADE_SIZE}$`
 • الحد الأقصى: `{MAX_OPEN_TRADES}` صفقة
 • Stop Loss: `{STOP_LOSS_PCT*100}%`
-• المطاردة: تبدأ من 2%
+• المطاردة: تبدأ من 1.5% → ستوب 0.5%
+
+🔢 *ترقيم الصفقات:* ✅ مفعل
 """)
     
     threading.Thread(target=trade_manager, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
     
-    print("✅ البوت V12 يعمل...")
+    print("✅ البوت V18 يعمل...")
     
     while True:
         time.sleep(1)
