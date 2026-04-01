@@ -1,4 +1,7 @@
 ccxt
 pandas
 requests
-flask
+scikit-image
+matplotlib
+mplfinance
+Pillow 
