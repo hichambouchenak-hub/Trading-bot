@@ -2,8 +2,6 @@
 # البوت V13 - V12 + التحليل البصري باستخدام الصور من GitHub
 # ========================================================
 
-!pip install ccxt pandas pandas_ta requests scikit-image --quiet
-
 import ccxt
 import pandas as pd
 import pandas_ta as ta
