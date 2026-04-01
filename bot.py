@@ -21,17 +21,15 @@ from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
 
-# 
 # =========================
-# إعدادات الربط (ضع مفاتيحك هنا)
+# إعدادات الربط
 # =========================
 API_KEY = "bg_bd03b4ab2190f5aaaf0965217f96b23b"
 SECRET = "3de47da68bb3828436fd4ab7e79918247a1677b5e92b2a3086a2a81ad68f34fc"
 PASSWORD = "Hich1978"
 
-TELEGRAM_TOKEN = "8681138761:AAEUVPSzkPzrwLMGcwotBbISQ3D1b-QZds8" # ضع التوكن هنا
+TELEGRAM_TOKEN = "8681138761:AAEUVPSzkPzrwLMGcwotBbISQ3D1b-QZds8"
 CHAT_ID = "5809146953"
-
 
 # =========================
 # إعدادات البوت V13
@@ -42,10 +40,16 @@ MAX_OPEN_TRADES = 20
 SWAP_HOURS = 6
 STOP_LOSS_PCT = 0.025
 
+# مستويات المطاردة (تبدأ من 2%)
 PROFIT_LEVELS = [
-    (2.0, 1.0), (3.5, 2.0), (7.0, 5.0), (15.0, 12.0), (30.0, 25.0),
+    (2.0, 1.0),   # عند 2% ربح → ستوب 1%
+    (3.5, 2.0),   # عند 3.5% ربح → ستوب 2%
+    (7.0, 5.0),   # عند 7% ربح → ستوب 5%
+    (15.0, 12.0), # عند 15% ربح → ستوب 12%
+    (30.0, 25.0), # عند 30% ربح → ستوب 25%
 ]
 
+# العملات المستبعدة
 EXCLUDED_COINS = ["USDC", "DAI", "FDUSD", "TUSD", "USDE", "PYUSD", "USD1", "USDT", "BGB", "BITGET"]
 
 # =========================
@@ -120,7 +124,7 @@ exchange = ccxt.bitget({
 })
 
 # =========================
-# باقي الكود (نفس V12)
+# إدارة الحالة
 # =========================
 MEMORY_FILE = "bot_v13_state.json"
 
@@ -202,13 +206,21 @@ def check_entry_v12(df, current_index):
     return low_20 <= fib_deep and current_close > gate_382
 
 def calculate_stop(entry_price, max_price, current_pnl):
+    """حساب الستوب مع المطاردة"""
     fixed_stop = entry_price * (1 - STOP_LOSS_PCT)
-    if current_pnl < 2.0: return fixed_stop
+    
+    # إذا لم نصل إلى 2% ربح، نستخدم الستوب الثابت
+    if current_pnl < 2.0:
+        return fixed_stop
+    
+    # نبدأ المطاردة
     final_stop = fixed_stop
     for trigger, trail_dist in PROFIT_LEVELS:
         if current_pnl >= trigger:
             final_stop = max(final_stop, max_price * (1 - (trail_dist / 100)))
-        else: break
+        else:
+            break
+    
     return final_stop
 
 def is_btc_uptrend(df_btc):
@@ -218,6 +230,51 @@ def is_btc_uptrend(df_btc):
         if ema50 is None: return True
         return df_btc['close'].iloc[-1] > ema50.iloc[-1]
     except: return True
+
+# =========================
+# إدارة الصفقات
+# =========================
+def trade_manager():
+    while True:
+        for symbol, t in list(state['active_trades'].items()):
+            try:
+                curr_p = exchange.fetch_ticker(symbol)['last']
+                entry = t['entry']
+                t['max_p'] = max(t.get('max_p', curr_p), curr_p)
+                pnl = (curr_p - entry) / entry * 100
+                pnl_usd = (pnl / 100) * TRADE_SIZE
+                
+                # حساب الستوب مع تمرير pnl
+                stop_price = calculate_stop(entry, t['max_p'], pnl)
+                
+                if curr_p <= stop_price:
+                    coin = symbol.split('/')[0]
+                    balance = exchange.fetch_balance()
+                    amt = balance['total'].get(coin, 0)
+                    if amt > 0:
+                        exchange.create_market_sell_order(symbol, amt)
+                        
+                        if pnl > 0:
+                            state['wins'] += 1
+                            res = "✅ *ربح* ✅"
+                        else:
+                            state['losses'] += 1
+                            res = "❌ *خسارة* ❌"
+                        
+                        max_gain = (t['max_p'] - entry) / entry * 100
+                        
+                        send_telegram(f"""
+{res}
+• العملة: `{symbol}`
+• الربح المحقق: `{pnl:+.2f}%` (+{pnl_usd:.2f}$)
+• أعلى ربح وصل: `{max_gain:.1f}%`
+""")
+                        del state['active_trades'][symbol]
+                        save_state()
+                        
+            except Exception as e:
+                print(f"خطأ في trade_manager: {e}")
+        time.sleep(20)
 
 # =========================
 # scanner مع التحليل البصري
@@ -277,50 +334,6 @@ def scanner():
         except Exception as e:
             print(f"خطأ في scanner: {e}")
         time.sleep(60)
-
-# =========================
-# إدارة الصفقات (نفس V12)
-# =========================
-def trade_manager():
-    while True:
-        for symbol, t in list(state['active_trades'].items()):
-            try:
-                curr_p = exchange.fetch_ticker(symbol)['last']
-                entry = t['entry']
-                t['max_p'] = max(t.get('max_p', curr_p), curr_p)
-                pnl = (curr_p - entry) / entry * 100
-                pnl_usd = (pnl / 100) * TRADE_SIZE
-                
-                stop_price = calculate_stop(entry, t['max_p'], pnl)
-                
-                if curr_p <= stop_price:
-                    coin = symbol.split('/')[0]
-                    balance = exchange.fetch_balance()
-                    amt = balance['total'].get(coin, 0)
-                    if amt > 0:
-                        exchange.create_market_sell_order(symbol, amt)
-                        
-                        if pnl > 0:
-                            state['wins'] += 1
-                            res = "✅ *ربح* ✅"
-                        else:
-                            state['losses'] += 1
-                            res = "❌ *خسارة* ❌"
-                        
-                        max_gain = (t['max_p'] - entry) / entry * 100
-                        
-                        send_telegram(f"""
-{res}
-• العملة: `{symbol}`
-• الربح المحقق: `{pnl:+.2f}%` (+{pnl_usd:.2f}$)
-• أعلى ربح وصل: `{max_gain:.1f}%`
-""")
-                        del state['active_trades'][symbol]
-                        save_state()
-                        
-            except Exception as e:
-                print(f"خطأ في trade_manager: {e}")
-        time.sleep(20)
 
 # =========================
 # تقرير دوري
@@ -389,6 +402,7 @@ if __name__ == "__main__":
 • حجم الصفقة: `{TRADE_SIZE}$`
 • الحد الأقصى: `{MAX_OPEN_TRADES}` صفقة
 • Stop Loss: `{STOP_LOSS_PCT*100}%`
+• المطاردة: تبدأ من 2%
 • التحليل البصري: ✅ مفعل (300 صورة مرجعية)
 
 💾 *حفظ الحالة:* ملف محلي ✅
