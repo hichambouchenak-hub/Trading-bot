@@ -4,4 +4,4 @@ requests
 scikit-image
 matplotlib
 mplfinance
-Pillow 
+Pillow
