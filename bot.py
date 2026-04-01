@@ -338,11 +338,11 @@ def scanner():
                         # شرط Fibonacci
                         if check_entry_v12(df, len(df)-1):
                             # التحليل البصري
-                            chart_buf = create_chart_image(df, s)
-                            avg_up, avg_down = analyze_chart_visually(chart_buf)
+                           # chart_buf = create_chart_image(df, s)
+                            #avg_up, avg_down = analyze_chart_visually(chart_buf)
                             
                             # القرار: تشابه مع UP > DOWN وتشابه > 55%
-                            if avg_up > avg_down and avg_up > 0.55:
+                          #  if avg_up > avg_down and avg_up > 0.55:
                                 exchange.create_market_buy_order(s, None, params={'cost': TRADE_SIZE})
                                 price = exchange.fetch_ticker(s)['last']
                                 state['active_trades'][s] = {"entry": price, "max_p": price}
