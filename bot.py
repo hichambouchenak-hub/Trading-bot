@@ -1,10 +1,9 @@
 # ========================================================
-# البوت V13 - V12 + التحليل البصري باستخدام الصور من GitHub
+# البوت V13 - التحليل البصري (بدون pandas_ta)
 # ========================================================
 
 import ccxt
 import pandas as pd
-import pandas_ta as ta
 import requests
 import time
 import threading
@@ -18,6 +17,35 @@ from skimage.metrics import structural_similarity as ssim
 from datetime import datetime
 import warnings
 warnings.filterwarnings('ignore')
+
+# =========================
+# مؤشرات يدوية (بدون pandas_ta)
+# =========================
+
+def calculate_ema(series, length):
+    """EMA يدوي"""
+    return series.ewm(span=length, adjust=False).mean()
+
+def calculate_rsi(series, length=14):
+    """RSI يدوي"""
+    delta = series.diff()
+    gain = delta.where(delta > 0, 0).rolling(window=length).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=length).mean()
+    rs = gain / loss
+    rsi = 100 - (100 / (1 + rs))
+    return rsi
+
+def calculate_atr(df, length=14):
+    """ATR يدوي"""
+    high = df['high']
+    low = df['low']
+    close = df['close']
+    tr1 = high - low
+    tr2 = abs(high - close.shift())
+    tr3 = abs(low - close.shift())
+    tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
+    atr = tr.rolling(window=length).mean()
+    return atr
 
 # =========================
 # إعدادات الربط
@@ -224,7 +252,7 @@ def calculate_stop(entry_price, max_price, current_pnl):
 def is_btc_uptrend(df_btc):
     try:
         if df_btc is None or len(df_btc) < 50: return True
-        ema50 = ta.ema(df_btc['close'], 50)
+        ema50 = calculate_ema(df_btc['close'], 50)
         if ema50 is None: return True
         return df_btc['close'].iloc[-1] > ema50.iloc[-1]
     except: return True
