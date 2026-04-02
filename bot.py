@@ -28,7 +28,7 @@ CHAT_ID = "5809146953"
 # =========================
 # إعدادات البوت V18
 # =========================
-START_BALANCE = 50.00
+START_BALANCE = 51.40
 TRADE_SIZE = 1.5
 MAX_OPEN_TRADES = 30
 STOP_LOSS_PCT = 0.025
