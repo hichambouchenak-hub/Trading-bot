@@ -1,6 +1,6 @@
 # ========================================================
-# البوت V18 - V12 محسن (مخفف + مطاردة مبكرة)
-# مع ترقيم الصفقات
+# البوت V18.5 - V18 محسن (مستويات مطاردة حتى 200%)
+# مع خاصية استقبال العملات عبر التليجرام
 # ========================================================
 
 import ccxt
@@ -26,20 +26,25 @@ TELEGRAM_TOKEN = "8681138761:AAEUVPSzkPzrwLMGcwotBbISQ3D1b-QZds8"
 CHAT_ID = "5809146953"
 
 # =========================
-# إعدادات البوت V18
+# إعدادات البوت V18.5
 # =========================
 START_BALANCE = 51.40
 TRADE_SIZE = 1.5
 MAX_OPEN_TRADES = 30
 STOP_LOSS_PCT = 0.025
 
-# مستويات المطاردة المحسنة V18 (حماية مبكرة)
+# مستويات المطاردة المحسنة (حتى 200%)
 PROFIT_LEVELS = [
-    (1.5, 0.5),   # عند 1.5% ربح → ستوب 0.5%
-    (3.0, 1.5),   # عند 3% ربح → ستوب 1.5%
-    (5.0, 3.0),   # عند 5% ربح → ستوب 3%
-    (10.0, 7.0),  # عند 10% ربح → ستوب 7%
-    (20.0, 15.0), # عند 20% ربح → ستوب 15%
+    (1.5, 0.5),    # عند 1.5% → ستوب 0.5%
+    (3.0, 1.5),    # عند 3% → ستوب 1.5%
+    (5.0, 3.0),    # عند 5% → ستوب 3%
+    (10.0, 7.0),   # عند 10% → ستوب 7%
+    (20.0, 15.0),  # عند 20% → ستوب 15%
+    (30.0, 25.0),  # عند 30% → ستوب 25%
+    (50.0, 45.0),  # عند 50% → ستوب 45%
+    (100.0, 95.0), # عند 100% → ستوب 95%
+    (150.0, 145.0),# عند 150% → ستوب 145%
+    (200.0, 195.0),# عند 200% → ستوب 195%
 ]
 
 # العملات المستبعدة
@@ -126,8 +131,8 @@ def calculate_fibonacci(df):
     """حساب Fibonacci المحسن V18 (مخفف)"""
     df['h_max'] = df['high'].rolling(50).max()
     df['l_min'] = df['low'].rolling(50).min()
-    df['fib_deep'] = df['h_max'] - (0.786 * (df['h_max'] - df['l_min']))  # 0.764 → 0.786
-    df['gate_35'] = df['l_min'] + (0.35 * (df['h_max'] - df['l_min']))    # 0.382 → 0.35
+    df['fib_deep'] = df['h_max'] - (0.786 * (df['h_max'] - df['l_min']))
+    df['gate_35'] = df['l_min'] + (0.35 * (df['h_max'] - df['l_min']))
     return df
 
 def check_entry(df, current_index):
@@ -140,7 +145,7 @@ def check_entry(df, current_index):
     return low_20 <= fib_deep and current_close > gate_35
 
 def calculate_stop(entry_price, max_price, current_pnl):
-    """حساب الستوب مع مستويات V18"""
+    """حساب الستوب مع مستويات حتى 200%"""
     fixed_stop = entry_price * (1 - STOP_LOSS_PCT)
     if current_pnl < PROFIT_LEVELS[0][0]:
         return fixed_stop
@@ -151,6 +156,122 @@ def calculate_stop(entry_price, max_price, current_pnl):
         else:
             break
     return final_stop
+
+# =========================
+# تحليل عملة من التوصية
+# =========================
+def analyze_coin(symbol):
+    """تحليل عملة وإرجاع القرار"""
+    try:
+        # التأكد من الصيغة
+        if not symbol.endswith('/USDT'):
+            symbol = f"{symbol.upper()}/USDT"
+        
+        df = fetch_ohlcv(symbol, limit=200)
+        if df is None or len(df) < 100:
+            return False, "بيانات غير كافية"
+        
+        df = calculate_fibonacci(df)
+        
+        if check_entry(df, len(df)-1):
+            # شرط إضافي: السعر فوق gate_35
+            gate_35 = df['gate_35'].iloc[-1]
+            current_price = df['close'].iloc[-1]
+            if current_price > gate_35:
+                return True, f"✅ {symbol} صالحة للشراء (السعر {current_price:.8f} > gate {gate_35:.8f})"
+            else:
+                return False, f"❌ {symbol} غير صالحة: السعر تحت gate"
+        else:
+            return False, f"❌ {symbol} لا تحقق شروط Fibonacci"
+            
+    except Exception as e:
+        return False, f"❌ خطأ في تحليل {symbol}: {e}"
+
+# =========================
+# شراء عملة من التوصية
+# =========================
+def buy_coin(symbol):
+    """شراء عملة بعد التحليل"""
+    try:
+        if not symbol.endswith('/USDT'):
+            symbol = f"{symbol.upper()}/USDT"
+        
+        if symbol in state['active_trades']:
+            return False, "العملة مفتوحة بالفعل"
+        
+        if len(state['active_trades']) >= MAX_OPEN_TRADES:
+            return False, "الحد الأقصى للصفقات ممتلئ"
+        
+        # تحليل العملة
+        is_valid, msg = analyze_coin(symbol)
+        
+        if not is_valid:
+            return False, msg
+        
+        # شراء
+        exchange.create_market_buy_order(symbol, None, params={'cost': TRADE_SIZE})
+        price = exchange.fetch_ticker(symbol)['last']
+        
+        state['trade_count'] += 1
+        trade_id = state['trade_count']
+        
+        state['active_trades'][symbol] = {"entry": price, "max_p": price, "trade_id": trade_id}
+        save_state()
+        
+        return True, f"🏹 تم شراء {symbol} بسعر {price:.8f}$ (صفقة #{trade_id})"
+        
+    except Exception as e:
+        return False, f"❌ فشل الشراء: {e}"
+
+# =========================
+# معالج رسائل التليجرام
+# =========================
+def telegram_listener():
+    """الاستماع لرسائل التليجرام"""
+    last_update_id = 0
+    
+    while True:
+        try:
+            # جلب الرسائل الجديدة
+            url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+            params = {"offset": last_update_id + 1, "timeout": 30}
+            response = requests.get(url, params=params, timeout=35)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok') and data.get('result'):
+                    for update in data['result']:
+                        last_update_id = update['update_id']
+                        
+                        if 'message' in update and 'text' in update['message']:
+                            text = update['message']['text'].strip().upper()
+                            chat_id = update['message']['chat']['id']
+                            
+                            # تجاهل الأوامر (تبدأ بـ /)
+                            if text.startswith('/'):
+                                continue
+                            
+                            # تجاهل الرسائل الطويلة جداً
+                            if len(text) > 20:
+                                continue
+                            
+                            # تنظيف العملة (إزالة /USDT إذا وجد)
+                            coin = text.replace('/USDT', '').strip()
+                            
+                            # تحليل وشراء
+                            success, msg = buy_coin(coin)
+                            
+                            # إرسال الرد
+                            requests.post(
+                                f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+                                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"}
+                            )
+                            
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"خطأ في telegram_listener: {e}")
+            time.sleep(5)
 
 # =========================
 # إدارة الصفقات
@@ -198,7 +319,7 @@ def trade_manager():
         time.sleep(20)
 
 # =========================
-# فاحص الصفقات
+# فاحص الصفقات (للعملات العادية)
 # =========================
 def scanner():
     btc_df = None
@@ -228,7 +349,6 @@ def scanner():
                             exchange.create_market_buy_order(s, None, params={'cost': TRADE_SIZE})
                             price = exchange.fetch_ticker(s)['last']
                             
-                            # زيادة رقم الصفقة
                             state['trade_count'] += 1
                             trade_id = state['trade_count']
                             
@@ -236,11 +356,10 @@ def scanner():
                             save_state()
                             
                             send_telegram(f"""
-🏹 *دخول جديد* 🏹
+🏹 *دخول تلقائي* 🏹
 • الصفقة رقم: `{trade_id}`
 • العملة: `{s}`
 • سعر الدخول: `{price:.8f}$`
-• حجم الصفقة: `{TRADE_SIZE}$`
 • الصفقات المفتوحة: `{len(state['active_trades'])}/{MAX_OPEN_TRADES}`
 """)
                             break
@@ -280,7 +399,7 @@ def report_loop():
             win_rate = (state['wins'] / total_trades * 100) if total_trades > 0 else 0
             
             msg = f"""
-📊 *تقرير V18* 📊
+📊 *تقرير V18.5* 📊
 ⏰ {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 {'=' * 40}
 
@@ -294,10 +413,12 @@ def report_loop():
 • ✅ رابحة: `{state['wins']}`
 • ❌ خاسرة: `{state['losses']}`
 • 📈 نسبة الربح: `{win_rate:.1f}%`
-• 🔢 إجمالي الصفقات المفتوحة: `{state['trade_count']}`
+• 🔢 إجمالي الصفقات: `{state['trade_count']}`
 
 🔹 *الصفقات المفتوحة:*
 {chr(10).join(details) if details else 'لا توجد صفقات مفتوحة'}
+
+⚙️ *المطاردة:* 1.5%→0.5% | 3%→1.5% | 5%→3% | 10%→7% | 20%→15% | 50%→45% | 100%→95% | 150%→145% | 200%→195%
 """
             send_telegram(msg)
             
@@ -310,23 +431,36 @@ def report_loop():
 # =========================
 if __name__ == "__main__":
     send_telegram(f"""
-🚀 *البوت V18 (محسن) بدأ التشغيل* 🚀
+🚀 *البوت V18.5 (مع استقبال التوصيات)* 🚀
 
 📊 *الإعدادات:*
 • رأس المال: `{START_BALANCE:.2f}$`
 • حجم الصفقة: `{TRADE_SIZE}$`
 • الحد الأقصى: `{MAX_OPEN_TRADES}` صفقة
 • Stop Loss: `{STOP_LOSS_PCT*100}%`
-• المطاردة: تبدأ من 1.5% → ستوب 0.5%
 
-🔢 *ترقيم الصفقات:* ✅ مفعل
+📈 *مستويات المطاردة (حتى 200%):*
+• 1.5% → 0.5%
+• 3% → 1.5%
+• 5% → 3%
+• 10% → 7%
+• 20% → 15%
+• 50% → 45%
+• 100% → 95%
+• 150% → 145%
+• 200% → 195%
+
+🤖 *ميزة جديدة:* أرسل اسم العملة (مثل `BTC` أو `ETH`) وسأحللها وأشتري إذا كانت مناسبة
 """)
     
+    # تشغيل الثريدات
     threading.Thread(target=trade_manager, daemon=True).start()
     threading.Thread(target=scanner, daemon=True).start()
     threading.Thread(target=report_loop, daemon=True).start()
+    threading.Thread(target=telegram_listener, daemon=True).start()
     
-    print("✅ البوت V18 يعمل...")
+    print("✅ البوت V18.5 يعمل...")
+    print("📩 جاهز لاستقبال العملات عبر التليجرام")
     
     while True:
         time.sleep(1)
