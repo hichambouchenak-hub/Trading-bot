@@ -96,12 +96,16 @@ def send_telegram(msg):
         pass
 
 # =========================
-# مزامنة الصفقات من المنصة (لحفظ الصفقات عند إعادة التشغيل)
+# مزامنة الصفقات من المنصة
 # =========================
 def sync_trades_from_exchange():
-    """جلب الصفقات المفتوحة من المنصة وإضافتها إلى الحالة مع سعر الدخول من التاريخ"""
+    """جلب الصفقات المفتوحة من المنصة وإضافتها إلى الحالة"""
     print("🔄 جاري مزامنة الصفقات من المنصة...")
     try:
+        # جلب الرصيد أولاً
+        balance = exchange.fetch_balance()
+        print(f"   💰 الرصيد: USDT={balance['total'].get('USDT', 0)}")
+        
         # جلب تاريخ الصفقات لمعرفة أسعار الدخول
         my_trades = exchange.fetch_my_trades(symbol=None, limit=200)
         latest_buy = {}
@@ -111,10 +115,7 @@ def sync_trades_from_exchange():
                 if symbol not in latest_buy or trade['timestamp'] > latest_buy[symbol]['timestamp']:
                     latest_buy[symbol] = trade
         
-        # جلب الرصيد الحالي
-        balance = exchange.fetch_balance()
         synced = 0
-        
         for asset, amount in balance['total'].items():
             if asset == 'USDT' or amount <= 0:
                 continue
@@ -123,16 +124,18 @@ def sync_trades_from_exchange():
             
             symbol = f"{asset}/USDT"
             
-            # البحث عن سعر الدخول من التاريخ
+            # البحث عن سعر الدخول
             entry_price = None
             if symbol in latest_buy:
                 entry_price = latest_buy[symbol]['price']
-                print(f"   ✅ {symbol}: سعر الدخول من التاريخ = {entry_price}")
+                print(f"   ✅ {symbol}: سعر الدخول = {entry_price}")
             else:
+                # إذا لم نجد، استخدم السعر الحالي
                 ticker = exchange.fetch_ticker(symbol)
                 entry_price = ticker['last']
-                print(f"   ⚠️ {symbol}: لم نجد سعر الدخول، نستخدم السعر الحالي {entry_price}")
+                print(f"   ⚠️ {symbol}: لم نجد سعر الدخول، نستخدم الحالي {entry_price}")
             
+            # إضافة الصفقة
             if symbol not in state['active_trades']:
                 state['trade_count'] += 1
                 trade_id = state['trade_count']
@@ -143,16 +146,17 @@ def sync_trades_from_exchange():
                     "synced": True
                 }
                 synced += 1
+                print(f"   ✅ تمت إضافة {symbol}")
         
         if synced > 0:
             save_state()
             send_telegram(f"🔄 تم استيراد {synced} صفقة من المنصة")
-            print(f"✅ تمت المزامنة: {synced} صفقة")
         else:
-            print("✅ لا توجد صفقات مفتوحة للمزامنة")
+            print("   ⚠️ لا توجد صفقات للمزامنة")
             
     except Exception as e:
         print(f"❌ خطأ في المزامنة: {e}")
+        send_telegram(f"❌ فشل المزامنة: {e}")
 
 # =========================
 # مؤشرات يدوية
@@ -442,7 +446,7 @@ def telegram_listener():
                                         send_telegram("❌ استخدم: /btc on أو /btc off")
                                 
                                 else:
-                                    send_telegram("❌ أمر غير معروف. الأوامر:\n/profit\n/close all\n/close BTC\n/stop 0.5\n/stop MET 0.5\n/status\n/trades\n/balance\n/btc on/off")
+                                    send_telegram("❌ أمر غير معروف")
                             
                             # ===== عملة عادية =====
                             else:
